@@ -3,7 +3,7 @@
 把下面整段复制给 Codex。不要把任何密码或 Token 写入提示词或 Git；管理员密码留空，由部署脚本自动生成并在成功摘要中显示给用户。
 
 ```text
-请在当前已 clone 的仓库中完成一次可复现的 Cloudflare 临时邮箱服务部署。这个任务只包含 temp mail 服务，不访问其他工程或附加构建目标。严格按以下要求执行：
+请在当前已 clone 的仓库中完成一次可复现的 Cloudflare 临时邮箱服务部署。如果当前目录不是 `https://github.com/lulalulaluobo/cloudflare-tempmail-deploy.git`，先执行 `git clone https://github.com/lulalulaluobo/cloudflare-tempmail-deploy.git` 并进入该仓库。这个任务只包含 temp mail 服务，不访问其他工程或附加构建目标。严格按以下要求执行：
 
 1. 先读取并执行 https://developers.cloudflare.com/agent-setup/prompt.md；随后读取 deployment-kit/README.md、deployment-kit/shell-script-requirement.md、deployment-kit/docs/ 下的部署文档；使用 rg 检查部署资料和 git status。禁止 reset、checkout --、删除无关资源，禁止输出 JWT、OAuth token、Cookie、账号 ID 或凭据文件内容。
 
