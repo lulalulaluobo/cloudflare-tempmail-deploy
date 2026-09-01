@@ -1,0 +1,14 @@
+diff --git a/worker/src/worker.ts b/worker/src/worker.ts
+index 9b987b2..c8d7654 100644
+--- a/worker/src/worker.ts
++++ b/worker/src/worker.ts
+@@ -20,8 +20,9 @@
+ const API_PATHS = [
+    "/api/",
+    "/open_api/",
+    "/user_api/",
+    "/admin/",
+    "/telegram/",
+    "/external/",
++   "/health_check",
+ ];
