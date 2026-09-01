@@ -22,7 +22,7 @@
 4. 已在本机执行 `npx wrangler login`，或准备在 Codex 检查失败时执行它。
 5. `ZONE_NAME`、`API_DOMAIN`、`MAIL_DOMAIN` 属于同一个 Cloudflare Zone。
 6. 如果要做真实收件，已在 Dashboard 为 `MAIL_DOMAIN` 开通 Email Routing 子域，并等待状态与 DNS/MX 记录就绪。
-7. 管理员密码只通过本地 env 或交互式安全输入提供，不写入 Git。
+7. 管理员密码留空，由部署脚本随机生成；成功摘要显示一次，随后只保存在本机被 Git 忽略的状态文件中。
 
 Cloudflare 官方的子域流程见 [Email Routing subdomains](https://developers.cloudflare.com/email-service/configuration/subdomains/)。Worker API 域名使用 Custom Domain，见 [Workers Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
 
@@ -40,10 +40,12 @@ CF_ZONE_ID=<你的 Zone ID>
 ZONE_NAME=<你的根域>
 API_DOMAIN=<你的 API 子域>
 MAIL_DOMAIN=<你的邮箱子域>
-ADMIN_PASSWORD=<本地管理员密码>
+ADMIN_PASSWORD=
 DEPLOY_FRONTEND=1
 EMAIL_ROUTING_READY=0
 ```
+
+也可以保持这些部署字段为空，让 Codex 在确认 Wrangler 已授权后询问你，并把确认结果写入本机 `deployment.env`。不要使用示例域名或猜测 Zone；管理员密码不需要询问。
 
 首次部署可以留空 `D1_ID`，脚本会查找或创建；如果当前 OAuth 无法读取 D1 列表，使用创建输出中的 UUID 填回 `D1_ID` 后重跑。脚本不会删除资源，也不会把 `JWT_SECRET` 或 `ADMIN_PASSWORDS` 放进 `wrangler.toml`。
 
@@ -66,6 +68,14 @@ npx wrangler whoami
 6. 部署同一个 Worker：网页由静态资源处理，API、邮件处理和定时任务继续由 Worker 处理；随后上传新的 `JWT_SECRET` 和 `ADMIN_PASSWORDS`。
 
 部署成功后，访问 `https://<API_DOMAIN>/` 就是源项目提供的网页，不需要另建 Pages 项目或再配置一个网页域名。
+
+部署摘要会输出：
+
+- 前端页面：`https://<API_DOMAIN>/`
+- 后端 API：`https://<API_DOMAIN>`
+- 管理后台：`https://<API_DOMAIN>/admin`
+- 邮箱域：`<MAIL_DOMAIN>`
+- 管理员登录密码：脚本自动生成的密码；没有单独的管理员用户名
 
 ## Email Routing 的安全处理
 

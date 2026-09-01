@@ -3,7 +3,8 @@
 ## A. 前置条件与本地安全
 
 - [ ] `deployment-kit/deployment.env` 未被 Git 跟踪。
-- [ ] `ADMIN_PASSWORD`、`JWT_SECRET`、OAuth token 未出现在脚本输出、截图或 Git diff。
+- [ ] `JWT_SECRET`、OAuth token 未出现在脚本输出、截图或 Git diff。
+- [ ] 自动生成的管理员密码只在部署成功摘要中显示给用户，没有进入 Git 或公开日志。
 - [ ] Cloudflare 账号已登录，目标域名已经添加到 Cloudflare 且 DNS/Nameserver 已生效。
 - [ ] `npx wrangler --version` 和 `npx wrangler whoami` 均成功。
 

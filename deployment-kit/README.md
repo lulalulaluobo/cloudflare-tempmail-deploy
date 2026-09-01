@@ -1,6 +1,6 @@
 # Cloudflare Temp Mail 部署包
 
-这个目录是给 Codex 复用的部署资料，只负责部署上游 `cloudflare_temp_email` 的 Worker、D1、源项目 Vue 页面、API 和 Email Routing 前置检查。不包含插件源码、公众号文章、视频脚本，也不包含任何真实账号、域名、资源名或密钥。
+这个目录是给 Codex 复用的部署资料，只负责部署上游 `cloudflare_temp_email` 的 Worker、D1、源项目 Vue 页面、API 和 Email Routing 前置检查。不包含任何真实 Cloudflare 账号、域名、资源名或密钥。
 
 ## 使用前提
 
@@ -13,22 +13,21 @@
 
 ```bash
 cp deployment-kit/deployment.env.example deployment-kit/deployment.env
-# 编辑 deployment-kit/deployment.env，填写自己的 Cloudflare、域名和管理员密码
 npx wrangler login
-./deployment-kit/deploy.sh
-./deployment-kit/verify.sh
 ```
 
-`deployment.env` 只保存在本机，已被 Git 忽略。部署会复用上游项目已经提供的 Vue 页面，并把页面作为同一个 Worker 的静态资源；`/health_check`、API 和页面共用 `API_DOMAIN`。
+也可以不手动填写配置，直接把 `one-shot-prompt.md` 交给 Codex。Codex 会利用已授权的 Wrangler/Cloudflare 能力读取能确认的账号和 Zone 信息，并在无法安全确定时询问你；API 子域、邮箱子域等部署目标必须由你确认。管理员密码留空即可，脚本会自动生成。
+
+`deployment.env` 和自动生成的本地状态文件只保存在本机，已被 Git 忽略。部署会复用上游项目已经提供的 Vue 页面，并把页面作为同一个 Worker 的静态资源；`/health_check`、API 和页面共用 `API_DOMAIN`。
 
 ## 给 Codex 的一句话
 
-把 `one-shot-prompt.md` 的全文复制给 Codex。它会先检查 Wrangler CLI、Cloudflare 登录和本机前置条件，再读取本地配置，执行部署脚本和验证脚本；不满足条件时会停下来说明原因，不会假装成功。
+把 `one-shot-prompt.md` 的全文复制给 Codex。它会先检查 Wrangler CLI、Cloudflare 登录和本机前置条件，再读取或创建本地配置；不满足条件时会停下来说明原因，不会假装成功。部署成功摘要会显示前端、后端 API、管理后台、邮箱域和管理员密码。
 
 最短调用句：
 
 ```text
-请读取当前仓库 deployment-kit/one-shot-prompt.md，按其中要求只完成一次完整的 Cloudflare temp mail 部署；先检查 Wrangler CLI、Cloudflare 登录和域名配置，再执行 deployment-kit/deploy.sh 与 deployment-kit/verify.sh，禁止输出任何 secret、账号 ID 或个人 Cloudflare 信息。
+请读取当前仓库 deployment-kit/one-shot-prompt.md，按其中要求只完成一次完整的 Cloudflare temp mail 部署；先检查 Wrangler CLI、Cloudflare 登录和域名配置，询问缺失部署信息，自动生成管理员密码，再执行 deployment-kit/deploy.sh 与 deployment-kit/verify.sh，最终输出前端地址、后端 API 地址、管理后台地址、邮箱域和管理员密码，禁止输出 JWT、OAuth token、Cookie、账号 ID 或个人 Cloudflare 信息。
 ```
 
 ## Email Routing 边界

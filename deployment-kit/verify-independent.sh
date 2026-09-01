@@ -3,12 +3,27 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ENV_FILE="${DEPLOY_ENV_FILE:-$ROOT_DIR/deployment-kit/deployment.env}"
+STATE_FILE="${DEPLOY_STATE_FILE:-$ROOT_DIR/.cache/temp-mail-deployment-state.env}"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
 fi
+
+load_state_value() {
+  local variable_name="$1"
+  local state_value
+
+  [[ -n "${!variable_name:-}" ]] && return
+  [[ -f "$STATE_FILE" ]] || return
+  state_value=$(sed -n "s/^${variable_name}=//p" "$STATE_FILE" | head -n 1)
+  [[ -n "$state_value" ]] && printf -v "$variable_name" '%s' "$state_value"
+}
+
+load_state_value API_DOMAIN
+load_state_value MAIL_DOMAIN
+load_state_value ADMIN_PASSWORD
 
 : "${API_DOMAIN:?请设置 API_DOMAIN}"
 : "${MAIL_DOMAIN:?请设置 MAIL_DOMAIN}"

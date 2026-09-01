@@ -35,6 +35,7 @@ DEPLOY_FRONTEND=${DEPLOY_FRONTEND:-1}
 FRONTEND_BUILD_COMMAND=${FRONTEND_BUILD_COMMAND:-build:pages}
 SKIP_SCHEMA=${SKIP_SCHEMA:-0}
 SKIP_SECRETS=${SKIP_SECRETS:-0}
+STATE_FILE=${DEPLOY_STATE_FILE:-$ROOT_DIR/.cache/temp-mail-deployment-state.env}
 
 die() {
   echo "错误：$*" >&2
@@ -62,14 +63,29 @@ require_value() {
   [[ -n "$2" ]] || die "$1 未设置，请填写 $ENV_FILE"
 }
 
-require_value CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID"
-require_value CF_ZONE_ID "$CF_ZONE_ID"
-require_value ZONE_NAME "$ZONE_NAME"
-require_value API_DOMAIN "$API_DOMAIN"
-require_value MAIL_DOMAIN "$MAIL_DOMAIN"
-if [[ "$SKIP_SECRETS" != "1" ]]; then
-  require_value ADMIN_PASSWORD "$ADMIN_PASSWORD"
-fi
+prompt_for_missing() {
+  local variable_name="$1"
+  local prompt_text="$2"
+  local current_value="${!variable_name:-}"
+  local entered_value
+
+  [[ -n "$current_value" ]] && return
+  [[ -t 0 ]] || die "$variable_name 未设置；请让 Codex 先询问并写入 $ENV_FILE，或使用交互式终端运行部署脚本"
+  read -r -p "$prompt_text: " entered_value
+  [[ -n "$entered_value" ]] || die "$variable_name 不能为空"
+  printf -v "$variable_name" '%s' "$entered_value"
+}
+
+write_runtime_state() {
+  mkdir -p "$(dirname "$STATE_FILE")"
+  umask 077
+  {
+    printf 'API_DOMAIN=%s\n' "$API_DOMAIN"
+    printf 'MAIL_DOMAIN=%s\n' "$MAIL_DOMAIN"
+    printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PASSWORD"
+  } > "$STATE_FILE"
+  chmod 600 "$STATE_FILE"
+}
 
 # Wrangler's OAuth flow in some versions treats an account-id environment
 # variable differently from the same value in wrangler.toml. Keep the value
@@ -77,19 +93,6 @@ fi
 # initial account-scoped D1 lookup/create.
 export -n CLOUDFLARE_ACCOUNT_ID 2>/dev/null || true
 export -n CF_ACCOUNT_ID 2>/dev/null || true
-
-for value in "$ZONE_NAME" "$API_DOMAIN" "$MAIL_DOMAIN"; do
-  valid_hostname "$value" || die "非法域名：$value"
-done
-
-[[ "$API_DOMAIN" != "$MAIL_DOMAIN" ]] || die "API_DOMAIN 和 MAIL_DOMAIN 必须不同"
-[[ "$API_DOMAIN" != "$ZONE_NAME" ]] || die "API_DOMAIN 不能是根域"
-[[ "$MAIL_DOMAIN" != "$ZONE_NAME" ]] || die "MAIL_DOMAIN 不能是根域"
-[[ "$API_DOMAIN" == *".$ZONE_NAME" ]] || die "API_DOMAIN 必须属于 ZONE_NAME"
-[[ "$MAIL_DOMAIN" == *".$ZONE_NAME" ]] || die "MAIL_DOMAIN 必须属于 ZONE_NAME"
-if [[ "$ENABLE_EMAIL_ROUTING" == "1" && "$EMAIL_ROUTING_READY" != "1" ]]; then
-  die "请先在 Cloudflare Dashboard 为 $MAIL_DOMAIN 开通 Email Routing 子域；确认 DNS/MX 已就绪后设置 EMAIL_ROUTING_READY=1。脚本不会调用 zone-level Catch-all 命令，以免覆盖旧根域实例。"
-fi
 
 for command_name in git node npm pnpm npx sed; do
   require_command "$command_name"
@@ -100,6 +103,36 @@ npx wrangler --version >/dev/null || die "Wrangler CLI 不可用；请确认 npm
 
 log "检查 Wrangler 登录状态"
 npx wrangler whoami >/dev/null || die "Wrangler 未登录，请先执行 npx wrangler login"
+
+prompt_for_missing CLOUDFLARE_ACCOUNT_ID "Cloudflare Account ID"
+prompt_for_missing CF_ZONE_ID "Cloudflare Zone ID"
+prompt_for_missing ZONE_NAME "Cloudflare 根域名"
+prompt_for_missing API_DOMAIN "API 子域名（例如 api.example.com）"
+prompt_for_missing MAIL_DOMAIN "邮箱子域名（例如 inbox.example.com）"
+
+require_value CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID"
+require_value CF_ZONE_ID "$CF_ZONE_ID"
+require_value ZONE_NAME "$ZONE_NAME"
+require_value API_DOMAIN "$API_DOMAIN"
+require_value MAIL_DOMAIN "$MAIL_DOMAIN"
+
+if [[ "$SKIP_SECRETS" != "1" && -z "$ADMIN_PASSWORD" ]]; then
+  ADMIN_PASSWORD=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(18).toString("hex"))')
+fi
+
+for value in "$ZONE_NAME" "$API_DOMAIN" "$MAIL_DOMAIN"; do
+  valid_hostname "$value" || die "非法域名：$value"
+done
+
+[[ "$API_DOMAIN" != "$MAIL_DOMAIN" ]] || die "API_DOMAIN 和 MAIL_DOMAIN 必须不同"
+[[ "$API_DOMAIN" != "$ZONE_NAME" ]] || die "API_DOMAIN 不能是根域"
+[[ "$MAIL_DOMAIN" != "$ZONE_NAME" ]] || die "MAIL_DOMAIN 不能是根域"
+[[ "$API_DOMAIN" == *".$ZONE_NAME" ]] || die "API_DOMAIN 必须属于 ZONE_NAME"
+[[ "$MAIL_DOMAIN" == *".$ZONE_NAME" ]] || die "MAIL_DOMAIN 必须属于 ZONE_NAME"
+
+if [[ "$ENABLE_EMAIL_ROUTING" == "1" && "$EMAIL_ROUTING_READY" != "1" ]]; then
+  die "请先在 Cloudflare Dashboard 为 $MAIL_DOMAIN 开通 Email Routing 子域；确认 DNS/MX 已就绪后设置 EMAIL_ROUTING_READY=1。脚本不会调用 zone-level Catch-all 命令，以免覆盖其他 Zone 路由。"
+fi
 
 SOURCE_DIR="$ROOT_DIR/$SOURCE_CACHE_DIR"
 WRANGLER_CONFIG="$SOURCE_DIR/worker/wrangler.toml"
@@ -241,17 +274,22 @@ else
   log "跳过 Email Routing；ENABLE_EMAIL_ROUTING=$ENABLE_EMAIL_ROUTING"
 fi
 
+write_runtime_state
+
 cat <<EOF
 
-部署完成（敏感值未输出）：
+部署完成（JWT 和 API token 未输出；管理员密码按请求显示一次）：
   Worker:     $WORKER_NAME
   D1:         $D1_NAME ($D1_ID)
-  API:        https://$API_DOMAIN
-  网页:       https://$API_DOMAIN/
+  前端页面:   https://$API_DOMAIN/
+  后端 API:   https://$API_DOMAIN
+  管理后台:   https://$API_DOMAIN/admin
   邮箱域:     $MAIL_DOMAIN
+  管理员密码: $ADMIN_PASSWORD
   源码:       $SOURCE_REF ($SOURCE_COMMIT)
 
 下一步：
   1. 执行 deployment-kit/verify.sh 验证健康检查、创建邮箱和 JWT 查询。
   2. 等待 DNS/MX 传播后，从外部邮箱发送一封邮件到新邮箱域。
+  3. 管理后台没有单独的用户名，使用上面的管理员密码登录。
 EOF
