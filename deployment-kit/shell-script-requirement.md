@@ -6,11 +6,12 @@
 
 ## 接口
 
-- 输入：`deployment.env`，或通过环境变量覆盖同名配置。
+- 输入：已生效的 Cloudflare 根域名 `ZONE_NAME`；脚本自动确认账号/Zone ID，并按根域名推导 API 子域、邮箱子域、Worker 和 D1 名称。`deployment.env` 或同名环境变量只用于本地保存和高级覆盖。
 - 部署入口：`deployment-kit/deploy.sh`。
 - 验收入口：`deployment-kit/verify.sh`。
 - 默认上游：`v1.11.1`。
 - 默认前端构建：`frontend` 下的 `pnpm run build:pages`。
+- 默认命名：`tempmail-api.<ZONE_NAME>`、`tempmail.<ZONE_NAME>`、`cloudflare-tempmail-<根域名安全短名>`、`temp-mail-db-<根域名安全短名>`。
 - 输出：Worker/D1 名称、前端页面地址、后端 API 地址、管理后台地址、邮箱域和管理员密码；JWT secret、API token、Cookie 等其他 secrets 不输出。
 
 ## 安全边界

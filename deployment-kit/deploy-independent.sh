@@ -18,11 +18,12 @@ fi
 CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-${CF_ACCOUNT_ID:-}}
 CF_ZONE_ID=${CF_ZONE_ID:-}
 ZONE_NAME=${ZONE_NAME:-}
-WORKER_NAME=${WORKER_NAME:-temp-mail-worker}
-D1_NAME=${D1_NAME:-temp-mail-db}
+WORKER_NAME=${WORKER_NAME:-}
+D1_NAME=${D1_NAME:-}
 D1_ID=${D1_ID:-}
 API_DOMAIN=${API_DOMAIN:-}
 MAIL_DOMAIN=${MAIL_DOMAIN:-}
+CF_API_TOKEN=${CF_API_TOKEN:-}
 SOURCE_REPO=${SOURCE_REPO:-https://github.com/dreamhunter2333/cloudflare_temp_email.git}
 SOURCE_REF=${SOURCE_REF:-v1.11.1}
 SOURCE_CACHE_DIR=${SOURCE_CACHE_DIR:-.cache/cloudflare_temp_email}
@@ -76,6 +77,25 @@ prompt_for_missing() {
   printf -v "$variable_name" '%s' "$entered_value"
 }
 
+normalize_zone_slug() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-32
+}
+
+derive_defaults() {
+  ZONE_NAME="${ZONE_NAME%.}"
+  local zone_slug
+  zone_slug=$(normalize_zone_slug "$ZONE_NAME")
+  [[ -n "$zone_slug" ]] || die "无法从 ZONE_NAME 生成安全资源名：$ZONE_NAME"
+
+  API_DOMAIN=${API_DOMAIN:-tempmail-api.$ZONE_NAME}
+  MAIL_DOMAIN=${MAIL_DOMAIN:-tempmail.$ZONE_NAME}
+  WORKER_NAME=${WORKER_NAME:-cloudflare-tempmail-$zone_slug}
+  D1_NAME=${D1_NAME:-temp-mail-db-$zone_slug}
+}
+
 write_runtime_state() {
   mkdir -p "$(dirname "$STATE_FILE")"
   umask 077
@@ -105,6 +125,18 @@ cloudflare_api() {
   fi
 }
 
+load_cloudflare_api_token() {
+  [[ -n "$CF_API_TOKEN" ]] && return
+  local token_json
+  token_json=$(npx wrangler auth token --json 2>/dev/null) \
+    || die "无法从 Wrangler 安全读取当前授权；未继续调用 Cloudflare API"
+  CF_API_TOKEN=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    process.stdout.write(body.token || "");
+  ' "$token_json")
+  [[ -n "$CF_API_TOKEN" ]] || die "当前 Wrangler 授权不是可用的 Cloudflare API 授权；未继续调用 Cloudflare API"
+}
+
 require_cloudflare_api_success() {
   node -e '
     const body = JSON.parse(process.argv[1]);
@@ -112,37 +144,26 @@ require_cloudflare_api_success() {
       const messages = (body.errors || []).map((item) => item.message || item.code).join("; ");
       throw new Error(messages || "Cloudflare API returned success=false");
     }
-  ' "$1" || die "Cloudflare Email Routing API 调用失败；未继续修改其他路由"
+  ' "$1" || die "Cloudflare API 调用失败；未继续修改其他资源"
 }
 
-configure_email_routing() {
-  [[ "$ENABLE_EMAIL_ROUTING" == "1" ]] || return
-  [[ "$EMAIL_ROUTING_READY" == "1" ]] && {
-    log "复用已确认的 Email Routing：$MAIL_DOMAIN"
-    return
-  }
-  [[ "$AUTO_EMAIL_ROUTING" == "1" ]] || die "AUTO_EMAIL_ROUTING=0 且 Email Routing 未就绪；请设置 EMAIL_ROUTING_READY=1 或启用自动配置"
+email_routing_safety_check() {
+  local parent_settings rules parent_enabled active_non_drop
 
-  log "准备自动配置 Email Routing 子域：$MAIL_DOMAIN"
-  local token_json parent_settings rules onboard dns_status route_update route_check
-  local parent_enabled active_non_drop remaining_missing route_ok
+  load_cloudflare_api_token
 
-  token_json=$(npx wrangler auth token --json 2>/dev/null) || die "无法从 Wrangler 安全读取当前授权；未配置 Email Routing"
-  CF_API_TOKEN=$(node -e '
-    const body = JSON.parse(process.argv[1]);
-    process.stdout.write(body.token || "");
-  ' "$token_json")
-  [[ -n "$CF_API_TOKEN" ]] || die "当前 Wrangler 授权不是可用的 Cloudflare API 授权；未配置 Email Routing"
-
-  parent_settings=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing") || die "无法读取目标 Zone 的 Email Routing 状态"
+  parent_settings=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing") \
+    || die "无法读取目标 Zone 的 Email Routing 状态"
   require_cloudflare_api_success "$parent_settings"
   parent_enabled=$(node -e '
     const body = JSON.parse(process.argv[1]);
     process.stdout.write(String(Boolean(body.result && body.result.enabled)));
   ' "$parent_settings")
-  [[ "$parent_enabled" == "false" ]] || die "目标 Zone 已启用 Email Routing；为避免覆盖现有收件服务，请使用独立 Zone 或先明确 EMAIL_ROUTING_READY=1"
+  [[ "$parent_enabled" == "false" ]] \
+    || die "目标 Zone 已启用 Email Routing；为避免覆盖现有收件服务，请使用独立 Zone"
 
-  rules=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing/rules") || die "无法读取目标 Zone 的 Email Routing 规则"
+  rules=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing/rules") \
+    || die "无法读取目标 Zone 的 Email Routing 规则"
   require_cloudflare_api_success "$rules"
   active_non_drop=$(node -e '
     const body = JSON.parse(process.argv[1]);
@@ -154,7 +175,26 @@ configure_email_routing() {
     }));
     process.stdout.write(unsafe ? "1" : "0");
   ' "$rules" "$WORKER_NAME")
-  [[ "$active_non_drop" == "0" ]] || die "目标 Zone 已存在启用中的非丢弃 Email Routing 规则；未修改现有路由"
+  [[ "$active_non_drop" == "0" ]] \
+    || die "目标 Zone 已存在启用中的非丢弃 Email Routing 规则；未修改现有路由"
+
+  EMAIL_ROUTING_PARENT_ENABLED="$parent_enabled"
+}
+
+configure_email_routing() {
+  [[ "$ENABLE_EMAIL_ROUTING" == "1" ]] || return
+  [[ "$EMAIL_ROUTING_READY" == "1" ]] && {
+    log "复用已确认的 Email Routing：$MAIL_DOMAIN"
+    return
+  }
+  [[ "$AUTO_EMAIL_ROUTING" == "1" ]] || die "AUTO_EMAIL_ROUTING=0 且 Email Routing 未就绪；请设置 EMAIL_ROUTING_READY=1 或启用自动配置"
+
+  log "准备自动配置 Email Routing 子域：$MAIL_DOMAIN"
+  local onboard dns_status route_update route_check
+  local parent_enabled remaining_missing route_ok
+
+  email_routing_safety_check
+  parent_enabled="$EMAIL_ROUTING_PARENT_ENABLED"
 
   # Cloudflare's dashboard currently uses this zone API call to register an
   # Email Routing subdomain. The response is zone-shaped, so verify the
@@ -216,7 +256,7 @@ configure_email_routing() {
 export -n CLOUDFLARE_ACCOUNT_ID 2>/dev/null || true
 export -n CF_ACCOUNT_ID 2>/dev/null || true
 
-for command_name in git node npm pnpm npx sed; do
+for command_name in git node npm pnpm npx curl sed tr cut; do
   require_command "$command_name"
 done
 
@@ -226,14 +266,42 @@ npx wrangler --version >/dev/null || die "Wrangler CLI 不可用；请确认 npm
 log "检查 Wrangler 登录状态"
 npx wrangler whoami >/dev/null || die "Wrangler 未登录，请先执行 npx wrangler login"
 
-prompt_for_missing CLOUDFLARE_ACCOUNT_ID "Cloudflare Account ID"
-prompt_for_missing CF_ZONE_ID "Cloudflare Zone ID"
-prompt_for_missing ZONE_NAME "Cloudflare 根域名"
-prompt_for_missing API_DOMAIN "API 子域名（例如 api.example.com）"
-prompt_for_missing MAIL_DOMAIN "邮箱子域名（例如 inbox.example.com）"
+log "检查 D1 只读访问"
+npx wrangler d1 list --json >/dev/null || die "当前 Wrangler 授权无法读取 D1；请检查 Cloudflare 账号权限"
 
-require_value CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID"
-require_value CF_ZONE_ID "$CF_ZONE_ID"
+prompt_for_missing ZONE_NAME "Cloudflare 根域名"
+
+derive_defaults
+valid_hostname "$ZONE_NAME" || die "非法根域名：$ZONE_NAME"
+load_cloudflare_api_token
+
+if [[ -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+  log "通过 Wrangler 授权自动确认 Cloudflare 账号"
+  WHOAMI_JSON=$(npx wrangler whoami --json 2>/dev/null) \
+    || die "无法通过 Wrangler 确认 Cloudflare 账号；请检查登录状态和账号权限"
+  CLOUDFLARE_ACCOUNT_ID=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    const account = Array.isArray(body.accounts) ? body.accounts[0] : null;
+    process.stdout.write(account && account.id ? account.id : "");
+  ' "$WHOAMI_JSON")
+fi
+
+if [[ -z "$CF_ZONE_ID" ]]; then
+  log "通过 Cloudflare API 自动确认目标 Zone"
+  ZONES_JSON=$(cloudflare_api GET "/zones?name=$ZONE_NAME&status=active&per_page=20") \
+    || die "无法查询 Cloudflare Zone；请确认根域已添加到 Cloudflare 且 DNS/Nameserver 已生效"
+  require_cloudflare_api_success "$ZONES_JSON"
+  CF_ZONE_ID=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    const zoneName = process.argv[2].toLowerCase();
+    const zones = Array.isArray(body.result) ? body.result : [];
+    const zone = zones.find((item) => String(item.name || "").toLowerCase() === zoneName && item.status === "active");
+    process.stdout.write(zone && zone.id ? zone.id : "");
+  ' "$ZONES_JSON" "$ZONE_NAME")
+fi
+
+[[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || die "无法自动确认 Cloudflare Account ID；请检查 Wrangler 登录和账号权限"
+[[ -n "$CF_ZONE_ID" ]] || die "找不到已生效的目标 Zone；请确认 ZONE_NAME 已添加到 Cloudflare 且 DNS/Nameserver 已生效"
 require_value ZONE_NAME "$ZONE_NAME"
 require_value API_DOMAIN "$API_DOMAIN"
 require_value MAIL_DOMAIN "$MAIL_DOMAIN"
@@ -251,6 +319,11 @@ done
 [[ "$MAIL_DOMAIN" != "$ZONE_NAME" ]] || die "MAIL_DOMAIN 不能是根域"
 [[ "$API_DOMAIN" == *".$ZONE_NAME" ]] || die "API_DOMAIN 必须属于 ZONE_NAME"
 [[ "$MAIL_DOMAIN" == *".$ZONE_NAME" ]] || die "MAIL_DOMAIN 必须属于 ZONE_NAME"
+
+if [[ "$ENABLE_EMAIL_ROUTING" == "1" && "$EMAIL_ROUTING_READY" != "1" ]]; then
+  log "预检 Email Routing 安全边界"
+  email_routing_safety_check
+fi
 
 SOURCE_DIR="$ROOT_DIR/$SOURCE_CACHE_DIR"
 WRANGLER_CONFIG="$SOURCE_DIR/worker/wrangler.toml"
