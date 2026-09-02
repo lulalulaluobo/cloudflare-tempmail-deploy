@@ -54,7 +54,7 @@ npx wrangler login
 如果只需要一句调用指令：
 
 ```text
-如果当前目录不是该仓库，请先执行 `git clone https://github.com/lulalulaluobo/cloudflare-tempmail-deploy.git` 并进入目录；然后读取当前仓库 `deployment-kit/one-shot-prompt.md`，按其中要求只完成一次完整的 Cloudflare temp mail 部署：先检查 Wrangler CLI、Cloudflare 登录和域名配置，询问缺失部署信息，自动生成管理员密码，再执行 `deployment-kit/deploy.sh` 与 `deployment-kit/verify.sh`，最终输出前端地址、后端 API 地址、管理后台地址、邮箱域和管理员密码，禁止输出 JWT、OAuth token、Cookie、账号 ID 或个人 Cloudflare 信息。
+如果当前目录不是该仓库，请先执行 `git clone https://github.com/lulalulaluobo/cloudflare-tempmail-deploy.git` 并进入目录；然后读取当前仓库 `deployment-kit/one-shot-prompt.md`，按其中要求只完成一次完整的 Cloudflare temp mail 部署：先检查 Wrangler CLI、Cloudflare 登录和域名配置，询问缺失部署信息，自动生成管理员密码，自动完成邮箱子域 Email Routing onboarding 和 Catch-all Worker 绑定，再执行 `deployment-kit/deploy.sh` 与 `deployment-kit/verify.sh`，最终输出前端地址、后端 API 地址、管理后台地址、邮箱域和管理员密码，禁止输出 JWT、OAuth token、Cookie、账号 ID 或个人 Cloudflare 信息。
 ```
 
 ## 部署成功后的输出
@@ -73,9 +73,9 @@ npx wrangler login
 
 ## Email Routing 注意事项
 
-`API_DOMAIN` 和 `MAIL_DOMAIN` 必须是 `ZONE_NAME` 下的不同子域。真实收信前，需要在 Cloudflare Dashboard 为 `MAIL_DOMAIN` 完成 Email Routing 子域 onboarding，并确认 MX/SPF 已生成。
+`API_DOMAIN` 和 `MAIL_DOMAIN` 必须是 `ZONE_NAME` 下的不同子域。部署脚本会自动为 `MAIL_DOMAIN` 完成 Email Routing 子域 onboarding、MX/SPF 检查和 Catch-all Worker 绑定；如果目标 Zone 已有启用中的邮件路由，为避免覆盖现有服务会停止并要求你明确处理。
 
-如果目标是全新的独立 Zone，Zone 级 Catch-all 不会影响其他 Zone；如果只是现有 Zone 下的新子域，不能把 Zone 级 Catch-all 误当成子域 Catch-all。部署脚本不会猜测或覆盖已有 Catch-all，也不会用逐地址规则代替 Catch-all。
+如果目标是全新的独立 Zone，脚本可以自动完成该 Zone 的 Email Routing；如果只是现有 Zone 下的新子域，脚本只在确认 Zone 尚未启用邮件路由且没有现有活动规则时自动配置，不会覆盖其他收件服务，也不会用逐地址规则代替 Catch-all。
 
 ## 资料目录
 

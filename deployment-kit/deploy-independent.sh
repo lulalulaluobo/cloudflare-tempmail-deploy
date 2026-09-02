@@ -2,9 +2,8 @@
 set -Eeuo pipefail
 
 # Deploy a fresh cloudflare_temp_email Worker + D1 instance without touching
-# the existing instance. Cloudflare's current Wrangler Email Routing commands
-# are zone-scoped, so subdomain onboarding/Catch-all is an explicit prerequisite
-# and is never mutated by this script.
+# unrelated resources. Email Routing is configured only when the target Zone is
+# still unconfigured; existing active Zone routing is a safety boundary.
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ENV_FILE="${DEPLOY_ENV_FILE:-$ROOT_DIR/deployment-kit/deployment.env}"
@@ -31,6 +30,7 @@ ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
 JWT_SECRET=${JWT_SECRET:-}
 ENABLE_EMAIL_ROUTING=${ENABLE_EMAIL_ROUTING:-1}
 EMAIL_ROUTING_READY=${EMAIL_ROUTING_READY:-0}
+AUTO_EMAIL_ROUTING=${AUTO_EMAIL_ROUTING:-1}
 DEPLOY_FRONTEND=${DEPLOY_FRONTEND:-1}
 FRONTEND_BUILD_COMMAND=${FRONTEND_BUILD_COMMAND:-build:pages}
 SKIP_SCHEMA=${SKIP_SCHEMA:-0}
@@ -87,6 +87,128 @@ write_runtime_state() {
   chmod 600 "$STATE_FILE"
 }
 
+cloudflare_api() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  local url="https://api.cloudflare.com/client/v4${endpoint}"
+
+  if [[ -n "$body" ]]; then
+    curl -fsS -X "$method" \
+      -H "Authorization: Bearer $CF_API_TOKEN" \
+      -H 'Content-Type: application/json' \
+      --data "$body" "$url"
+  else
+    curl -fsS -X "$method" \
+      -H "Authorization: Bearer $CF_API_TOKEN" \
+      "$url"
+  fi
+}
+
+require_cloudflare_api_success() {
+  node -e '
+    const body = JSON.parse(process.argv[1]);
+    if (!body.success) {
+      const messages = (body.errors || []).map((item) => item.message || item.code).join("; ");
+      throw new Error(messages || "Cloudflare API returned success=false");
+    }
+  ' "$1" || die "Cloudflare Email Routing API 调用失败；未继续修改其他路由"
+}
+
+configure_email_routing() {
+  [[ "$ENABLE_EMAIL_ROUTING" == "1" ]] || return
+  [[ "$EMAIL_ROUTING_READY" == "1" ]] && {
+    log "复用已确认的 Email Routing：$MAIL_DOMAIN"
+    return
+  }
+  [[ "$AUTO_EMAIL_ROUTING" == "1" ]] || die "AUTO_EMAIL_ROUTING=0 且 Email Routing 未就绪；请设置 EMAIL_ROUTING_READY=1 或启用自动配置"
+
+  log "准备自动配置 Email Routing 子域：$MAIL_DOMAIN"
+  local token_json parent_settings rules onboard dns_status route_update route_check
+  local parent_enabled active_non_drop remaining_missing route_ok
+
+  token_json=$(npx wrangler auth token --json 2>/dev/null) || die "无法从 Wrangler 安全读取当前授权；未配置 Email Routing"
+  CF_API_TOKEN=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    process.stdout.write(body.token || "");
+  ' "$token_json")
+  [[ -n "$CF_API_TOKEN" ]] || die "当前 Wrangler 授权不是可用的 Cloudflare API 授权；未配置 Email Routing"
+
+  parent_settings=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing") || die "无法读取目标 Zone 的 Email Routing 状态"
+  require_cloudflare_api_success "$parent_settings"
+  parent_enabled=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    process.stdout.write(String(Boolean(body.result && body.result.enabled)));
+  ' "$parent_settings")
+  [[ "$parent_enabled" == "false" ]] || die "目标 Zone 已启用 Email Routing；为避免覆盖现有收件服务，请使用独立 Zone 或先明确 EMAIL_ROUTING_READY=1"
+
+  rules=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing/rules") || die "无法读取目标 Zone 的 Email Routing 规则"
+  require_cloudflare_api_success "$rules"
+  active_non_drop=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    const workerName = process.argv[2];
+    const rules = Array.isArray(body.result) ? body.result : [];
+    const unsafe = rules.some((rule) => rule.enabled && (rule.actions || []).some((action) => {
+      const isThisWorker = action.type === "worker" && (action.value || []).length === 1 && action.value[0] === workerName;
+      return !isThisWorker && action.type !== "drop";
+    }));
+    process.stdout.write(unsafe ? "1" : "0");
+  ' "$rules" "$WORKER_NAME")
+  [[ "$active_non_drop" == "0" ]] || die "目标 Zone 已存在启用中的非丢弃 Email Routing 规则；未修改现有路由"
+
+  # Cloudflare's dashboard currently uses this zone API call to register an
+  # Email Routing subdomain. The response is zone-shaped, so verify the
+  # requested subdomain explicitly before touching the Catch-all rule.
+  dns_status=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing/dns?subdomain=$MAIL_DOMAIN") || die "无法读取 Email Routing 子域 DNS 状态"
+  require_cloudflare_api_success "$dns_status"
+  remaining_missing=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    const errors = body.result && Array.isArray(body.result.errors) ? body.result.errors : [];
+    process.stdout.write(String(errors.length));
+  ' "$dns_status")
+  if [[ "$remaining_missing" != "0" ]]; then
+    onboard=$(cloudflare_api POST "/zones/$CF_ZONE_ID/email/routing/dns" "{\"name\":\"$MAIL_DOMAIN\"}") || die "Email Routing 子域 onboarding 调用失败"
+    require_cloudflare_api_success "$onboard"
+    dns_status=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing/dns?subdomain=$MAIL_DOMAIN") || die "无法读取 Email Routing 子域 DNS 状态"
+    require_cloudflare_api_success "$dns_status"
+    remaining_missing=$(node -e '
+      const body = JSON.parse(process.argv[1]);
+      const errors = body.result && Array.isArray(body.result.errors) ? body.result.errors : [];
+      process.stdout.write(String(errors.length));
+    ' "$dns_status")
+  else
+    log "Email Routing 子域已存在，跳过 onboarding：$MAIL_DOMAIN"
+  fi
+  [[ "$remaining_missing" == "0" ]] || die "Email Routing 子域 DNS/MX 尚未就绪；未创建 Catch-all"
+
+  # The onboarding API may temporarily enable the parent Zone. Restore the
+  # previously disabled parent so only the explicitly onboarded subdomain is
+  # used for this instance.
+  if [[ "$parent_enabled" == "false" ]]; then
+    cloudflare_api POST "/zones/$CF_ZONE_ID/email/routing/disable" >/dev/null \
+      || die "子域已创建，但无法恢复父 Zone 的禁用状态；未继续更新 Catch-all"
+  fi
+
+  route_update=$(cloudflare_api PUT "/zones/$CF_ZONE_ID/email/routing/rules/catch_all" \
+    "{\"enabled\":true,\"actions\":[{\"type\":\"worker\",\"value\":[\"$WORKER_NAME\"]}]}" \
+  ) || die "Email Routing Catch-all 更新失败；未继续修改其他资源"
+  require_cloudflare_api_success "$route_update"
+
+  route_check=$(cloudflare_api GET "/zones/$CF_ZONE_ID/email/routing/rules/catch_all") || die "无法读取 Email Routing Catch-all 状态"
+  require_cloudflare_api_success "$route_check"
+  route_ok=$(node -e '
+    const body = JSON.parse(process.argv[1]);
+    const rule = body.result || {};
+    const actions = Array.isArray(rule.actions) ? rule.actions : [];
+    const ok = rule.enabled === true && actions.some((action) => action.type === "worker" && (action.value || []).includes(process.argv[2]));
+    process.stdout.write(ok ? "1" : "0");
+  ' "$route_check" "$WORKER_NAME")
+  [[ "$route_ok" == "1" ]] || die "Catch-all 验证失败；未报告 Email Routing 已完成"
+
+  EMAIL_ROUTING_READY=1
+  log "Email Routing 已自动完成：$MAIL_DOMAIN -> $WORKER_NAME"
+}
+
 # Wrangler's OAuth flow in some versions treats an account-id environment
 # variable differently from the same value in wrangler.toml. Keep the value
 # for config generation, but let OAuth select the current account for the
@@ -129,10 +251,6 @@ done
 [[ "$MAIL_DOMAIN" != "$ZONE_NAME" ]] || die "MAIL_DOMAIN 不能是根域"
 [[ "$API_DOMAIN" == *".$ZONE_NAME" ]] || die "API_DOMAIN 必须属于 ZONE_NAME"
 [[ "$MAIL_DOMAIN" == *".$ZONE_NAME" ]] || die "MAIL_DOMAIN 必须属于 ZONE_NAME"
-
-if [[ "$ENABLE_EMAIL_ROUTING" == "1" && "$EMAIL_ROUTING_READY" != "1" ]]; then
-  die "请先在 Cloudflare Dashboard 为 $MAIL_DOMAIN 开通 Email Routing 子域；确认 DNS/MX 已就绪后设置 EMAIL_ROUTING_READY=1。脚本不会调用 zone-level Catch-all 命令，以免覆盖其他 Zone 路由。"
-fi
 
 SOURCE_DIR="$ROOT_DIR/$SOURCE_CACHE_DIR"
 WRANGLER_CONFIG="$SOURCE_DIR/worker/wrangler.toml"
@@ -268,8 +386,7 @@ else
 fi
 
 if [[ "$ENABLE_EMAIL_ROUTING" == "1" ]]; then
-  log "Email Routing 子域已由前置步骤确认：$MAIL_DOMAIN"
-  echo "注意：未执行 Wrangler 的 zone-level Catch-all 命令；请在子域范围内将 Catch-all 指向 $WORKER_NAME。"
+  configure_email_routing
 else
   log "跳过 Email Routing；ENABLE_EMAIL_ROUTING=$ENABLE_EMAIL_ROUTING"
 fi
@@ -290,6 +407,6 @@ cat <<EOF
 
 下一步：
   1. 执行 deployment-kit/verify.sh 验证健康检查、创建邮箱和 JWT 查询。
-  2. 等待 DNS/MX 传播后，从外部邮箱发送一封邮件到新邮箱域。
+  2. 从外部邮箱发送一封邮件到新邮箱域，确认邮件进入收件箱。
   3. 管理后台没有单独的用户名，使用上面的管理员密码登录。
 EOF

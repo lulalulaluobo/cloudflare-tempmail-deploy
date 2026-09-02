@@ -18,7 +18,7 @@
 - 禁止删除、替换或复用受保护旧资源。
 - `ADMIN_PASSWORD` 留空时必须随机生成，并只在部署成功摘要中显示一次；它不写入 Git，且本地状态文件必须使用忽略规则和 `600` 权限。
 - 禁止打印 `JWT_SECRET`、OAuth token、Cookie 和凭据文件内容。
-- Email Routing 的 zone-level 命令不得被当作子域 Catch-all 操作；无法证明目标范围时必须停在人工步骤。
+- 不得用 Wrangler 的 zone-level 命令猜测子域 Catch-all 范围。自动 Email Routing 只允许在目标 Zone 原本未启用且没有启用中非丢弃规则时执行；无法证明安全范围时必须停止并报告原因。
 
 ## 验收
 
@@ -26,4 +26,4 @@
 - 新 Worker `/health_check` 返回 `OK`。
 - 管理员创建地址、JWT 收件箱查询、删除地址均成功。
 - `https://<API_DOMAIN>/` 返回源项目 Vue 页面。
-- 真实邮件收取只有在新邮箱子域 Catch-all 已完成后才算通过。
+- 自动 onboarding、MX/SPF 和目标 Worker Catch-all 均完成后，再以真实 SMTP 邮件确认收件。

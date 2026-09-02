@@ -1,13 +1,13 @@
 # Cloudflare Temp Mail 部署包
 
-这个目录是给 Codex 复用的部署资料，只负责部署上游 `cloudflare_temp_email` 的 Worker、D1、源项目 Vue 页面、API 和 Email Routing 前置检查。不包含任何真实 Cloudflare 账号、域名、资源名或密钥。
+这个目录是给 Codex 复用的部署资料，只负责部署上游 `cloudflare_temp_email` 的 Worker、D1、源项目 Vue 页面、API 和 Email Routing。不包含任何真实 Cloudflare 账号、域名、资源名或密钥。
 
 ## 使用前提
 
 1. 有可登录的 Cloudflare 账号，并拥有目标 Zone 的 Workers、D1、Secrets 和 Email Routing 权限。
 2. 有一个已经添加到 Cloudflare、Nameserver/DNS 已生效的域名；`ZONE_NAME`、`API_DOMAIN` 和 `MAIL_DOMAIN` 必须属于同一个 Zone。
 3. 本机有 Node.js、npm、pnpm、git、curl；Codex 会先检查 Wrangler CLI 和 Cloudflare 登录状态。
-4. 要收信时，先在 Cloudflare Dashboard 为 `MAIL_DOMAIN` 完成 Email Routing 子域 onboarding，并确认 MX/SPF 已生成，再将 `EMAIL_ROUTING_READY=1` 写入本地 env。
+4. Wrangler 必须具备 Workers、D1、Secrets、DNS/Email Routing 的授权；脚本会自动为 `MAIL_DOMAIN` onboarding、等待/核验 MX/SPF，并设置 Catch-all Worker。
 
 ## 首次使用
 
@@ -16,7 +16,7 @@ cp deployment-kit/deployment.env.example deployment-kit/deployment.env
 npx wrangler login
 ```
 
-也可以不手动填写配置，直接把 `one-shot-prompt.md` 交给 Codex。Codex 会利用已授权的 Wrangler/Cloudflare 能力读取能确认的账号和 Zone 信息，并在无法安全确定时询问你；API 子域、邮箱子域等部署目标必须由你确认。管理员密码留空即可，脚本会自动生成。
+也可以不手动填写配置，直接把 `one-shot-prompt.md` 交给 Codex。Codex 会利用已授权的 Wrangler/Cloudflare 能力读取能确认的账号和 Zone 信息，并在无法安全确定时询问你；API 子域、邮箱子域等部署目标必须由你确认。管理员密码留空即可，脚本会自动生成。Email Routing 也由脚本自动配置；若目标 Zone 已有启用中的邮件路由，脚本会为安全起见停止，不会覆盖现有服务。
 
 `deployment.env` 和自动生成的本地状态文件只保存在本机，已被 Git 忽略。部署会复用上游项目已经提供的 Vue 页面，并把页面作为同一个 Worker 的静态资源；`/health_check`、API 和页面共用 `API_DOMAIN`。
 
@@ -32,7 +32,7 @@ npx wrangler login
 
 ## Email Routing 边界
 
-部署脚本不会猜测或覆盖已有 Zone 的 Catch-all。全新的独立 Zone 完成 Email Routing onboarding 后，可以把该 Zone 的 Catch-all 指向本次新 Worker；如果只是现有 Zone 下的新子域，必须先确认 Cloudflare 当前是否提供子域范围的 Catch-all，不能把 Zone 级规则当成子域规则，也不能用逐地址规则代替 Catch-all。
+部署脚本不会猜测或覆盖已有启用中的 Zone Catch-all。对于未启用 Email Routing 且没有启用中非丢弃规则的目标 Zone，脚本会通过 Cloudflare 当前 API onboarding `MAIL_DOMAIN`，核验子域 MX/SPF，并设置 Catch-all 到本次 Worker；onboarding API 失败或范围无法证明时会停止，不会改用逐地址规则。
 
 ## 文件
 

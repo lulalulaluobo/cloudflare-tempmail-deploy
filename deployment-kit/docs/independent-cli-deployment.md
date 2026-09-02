@@ -21,7 +21,7 @@
 3. 本机安装 Node.js、npm、pnpm、git 和 curl；Codex 会额外检查 `npx wrangler --version`。
 4. 已在本机执行 `npx wrangler login`，或准备在 Codex 检查失败时执行它。
 5. `ZONE_NAME`、`API_DOMAIN`、`MAIL_DOMAIN` 属于同一个 Cloudflare Zone。
-6. 如果要做真实收件，已在 Dashboard 为 `MAIL_DOMAIN` 开通 Email Routing 子域，并等待状态与 DNS/MX 记录就绪。
+6. Email Routing 默认自动配置：目标 Zone 在部署前必须未启用 Email Routing，且没有启用中的非丢弃路由；脚本会为 `MAIL_DOMAIN` onboarding 并设置 Catch-all。
 7. 管理员密码留空，由部署脚本随机生成；成功摘要显示一次，随后只保存在本机被 Git 忽略的状态文件中。
 
 Cloudflare 官方的子域流程见 [Email Routing subdomains](https://developers.cloudflare.com/email-service/configuration/subdomains/)。Worker API 域名使用 Custom Domain，见 [Workers Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
@@ -43,6 +43,7 @@ MAIL_DOMAIN=<你的邮箱子域>
 ADMIN_PASSWORD=
 DEPLOY_FRONTEND=1
 EMAIL_ROUTING_READY=0
+AUTO_EMAIL_ROUTING=1
 ```
 
 也可以保持这些部署字段为空，让 Codex 在确认 Wrangler 已授权后询问你，并把确认结果写入本机 `deployment.env`。不要使用示例域名或猜测 Zone；管理员密码不需要询问。
@@ -77,18 +78,18 @@ npx wrangler whoami
 - 邮箱域：`<MAIL_DOMAIN>`
 - 管理员登录密码：脚本自动生成的密码；没有单独的管理员用户名
 
-## Email Routing 的安全处理
+## Email Routing 的自动处理
 
-不要执行下面两类命令来“猜测”子域范围：
+不要执行下面两类命令来猜测子域范围：
 
 ```bash
 npx wrangler email routing enable <MAIL_DOMAIN>
 npx wrangler email routing rules update <MAIL_DOMAIN> catch-all ...
 ```
 
-部分 Wrangler 版本会将它们按 Zone 处理，且 Catch-all 的 Worker 参数可能被拒绝；继续尝试可能误改同一 Zone 的其他收件路由。通用路由规则表单中的具体地址规则也不能代替 `*@<MAIL_DOMAIN>` Catch-all。
+部分 Wrangler 版本会将它们按 Zone 处理。部署脚本改用当前 Cloudflare API onboarding `MAIL_DOMAIN`，随后显式读取子域 DNS 状态并更新 Catch-all，再验证 Worker 目标；不会用逐地址规则代替 Catch-all。
 
-正确做法：先完成官方 Dashboard 子域 onboarding；随后只使用能明确证明目标范围的 Cloudflare API 操作，或由管理员在 Cloudflare 当前支持的子域 Catch-all 界面完成。完成后再执行 `EMAIL_ROUTING_READY=1 ./deployment-kit/deploy.sh`，脚本只做前置确认，不猜测或修改其他 Catch-all。
+为防止覆盖现有邮件服务，脚本只有在目标 Zone 原本未启用 Email Routing、且不存在启用中的非丢弃规则时才自动执行。若你要复用已有 Email Routing Zone，请先设置 `EMAIL_ROUTING_READY=1`，脚本只验证并复用现有配置，不会自动改路由。
 
 ## 回滚与清理
 

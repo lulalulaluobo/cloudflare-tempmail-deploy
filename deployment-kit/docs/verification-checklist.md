@@ -15,7 +15,7 @@
 - [ ] 远程 schema 已执行。
 - [ ] API Custom Domain 返回 HTTPS 200。
 - [ ] Worker secrets 列表包含 `JWT_SECRET` 和 `ADMIN_PASSWORDS`，但值不可读取/不可打印。
-- [ ] 邮箱子域已在 Dashboard 开通，MX/SPF 记录可见。
+- [ ] 邮箱子域由脚本自动 onboarding，MX/SPF 记录可见。
 - [ ] Catch-all 已明确指向本次新 Worker，且没有创建逐地址规则代替 Catch-all。
 
 ## C. API
